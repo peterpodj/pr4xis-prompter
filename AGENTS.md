@@ -679,7 +679,7 @@ axes:
   adversarial_intent: ${intent}
   cognitive_operation: ${op}
   liberation_surface: ${surface}
-tier: high
+tier: medium
 provenance: hand_tuned
 source: [L1B3RT4S-main/${f}]
 artifact_kind: system_prompt
@@ -743,7 +743,7 @@ axes:
   adversarial_intent: persona_break
   cognitive_operation: extract
   liberation_surface: system_prompt_fence
-tier: high
+tier: medium
 provenance: hand_tuned
 source: [CL4R1T4S-main/${vendor}/${f}]
 artifact_kind: system_prompt_reference
@@ -1913,3 +1913,281 @@ When ready to begin implementation, two execution options:
 2. **Inline execution** — execute tasks in this session using `superpowers:executing-plans`, batch with checkpoints.
 
 Phases 0–2 are critical path. Phases 3, 5, 6 are partially parallelizable.
+
+---
+
+## WFGY Revisions (2026-04-23)
+
+Applied after WFGY reasoning-introspection pass on the original plan. These tasks are inserted into the phase order shown by their numbering (0.5 between 0 and 1; 4.0 before 4.1; eval-harness adversarial cases extends 6.1; minimal-mode extends 2.4). The original task bodies above remain authoritative for their core scope; the additions below add discipline that the original plan lacked.
+
+### Task 0.5: Taxonomy citations
+
+**Files:**
+- Modify: every `db/<axis>/<child>/_meta.yml` from Task 1.1
+
+- [ ] **Step 1: Add `citations` field to each `_meta.yml`**
+
+For each depth-1 child, add either a citation list or an explicit `provenance: invented` flag:
+
+```yaml
+# db/adversarial_intent/refusal_bypass/_meta.yml — example with citations
+citations:
+  - "OWASP LLM Top 10 LLM01 (Prompt Injection)"
+  - "Perez & Ribeiro 2022 — Ignore Previous Instructions: arxiv:2211.09527"
+  - "Greshake et al. 2023 — Indirect Prompt Injection: arxiv:2302.12173"
+provenance: literature_grounded
+```
+
+```yaml
+# db/cognitive_operation/role_induce/_meta.yml — example without citations
+citations: []
+provenance: invented
+notes: |
+  No published taxonomy maps directly to this concept. Working hypothesis;
+  open to revision in v0.2 once empirical telemetry shows what cognitive
+  operations real queries actually request.
+```
+
+- [ ] **Step 2: Update validator to require `provenance` field on every `_meta.yml`**
+
+Modify `src/validator.ts` `validateAxisMeta()` to require `provenance: literature_grounded | invented`. Reject `_meta.yml` files missing the field.
+
+- [ ] **Step 3: Run indexer to verify all 21 nodes carry the field**
+
+Run: `pnpm pr4xis-index`
+Expected: green; no `META_MISSING_FIELD` rejections.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/validator.ts db/
+git commit -m "feat(taxonomy): explicit provenance per leaf (citations or invented flag)"
+```
+
+### Task 1.4-revised: GODMODE stub tactics use provenance: measurement
+
+The original Task 1.4 noted that the GODMODE playbook seed will produce `PLAYBOOK_DANGLING_TACTIC` errors unless stub tactics are added. With seed defaults now `tier: medium` and the playbook invariant requiring `tier >= high`, the stubs need explicit elevation:
+
+- [ ] **Step 1: Stub tactics for GODMODE references carry `provenance: measurement`, `tier: high`**
+
+Each stub:
+```yaml
+---
+id: l33t_divider_inverse
+type: tactic
+axes:
+  adversarial_intent: refusal_bypass
+  cognitive_operation: persuade
+  liberation_surface: post_training_refusal
+tier: high
+provenance: measurement
+source: [G0DM0D3-main/src/lib/godmode-prompt.ts:N]
+artifact_kind: system_prompt
+applicable_models: [openai/gpt-4o]
+created: 2026-04-23
+---
+
+(stub — replace body with extracted prompt from G0DM0D3)
+```
+
+The arena scoring of the GODMODE playbook IS the independent evidence that justifies `tier: high` here — this is the legitimate path through the non-circular promotion gate.
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add db/adversarial_intent/refusal_bypass/tactics/
+git commit -m "feat(seed): GODMODE stub tactics with measurement provenance"
+```
+
+### Task 2.4-extension: Minimal mode (`PR4XIS_MODE=simple`)
+
+**Files:**
+- Modify: `src/cli.ts` and `src/assessor.ts`
+- Create: `src/assessor-simple.ts`
+
+- [ ] **Step 1: Write `src/assessor-simple.ts` (regex/keyword router, no LLM)**
+
+```typescript
+import { AxesPaths } from './schema.js'
+
+const RULES: { pattern: RegExp; axes: Partial<AxesPaths> }[] = [
+    { pattern: /jailbreak|ignore previous|safety training/i, axes: { adversarial_intent: 'refusal_bypass' } },
+    { pattern: /system prompt|leak|extract.*prompt/i, axes: { adversarial_intent: 'exfiltration', liberation_surface: 'system_prompt_fence' } },
+    { pattern: /persona|DAN|roleplay/i, axes: { adversarial_intent: 'persona_break', cognitive_operation: 'role_induce' } },
+    { pattern: /inject/i, axes: { adversarial_intent: 'prompt_injection' } },
+]
+
+export function assessSimple(request: string): { axes: AxesPaths; confidence: number } {
+    const out: AxesPaths = {
+        adversarial_intent: 'refusal_bypass',
+        cognitive_operation: 'persuade',
+        liberation_surface: 'post_training_refusal',
+    }
+    let matched = 0
+    for (const { pattern, axes } of RULES) {
+        if (pattern.test(request)) {
+            Object.assign(out, axes)
+            matched++
+        }
+    }
+    return { axes: out, confidence: matched > 0 ? 0.5 : 0.2 }
+}
+```
+
+- [ ] **Step 2: Wire mode toggle in cli.ts and the skill entry**
+
+```typescript
+const mode = process.env.PR4XIS_MODE || 'elaborate'
+if (mode === 'simple') {
+    const { assessSimple } = await import('./assessor-simple.js')
+    const { axes } = assessSimple(request)
+    // skip stage 1+2, go straight to lookup
+} else {
+    // existing two-stage assessor path
+}
+```
+
+- [ ] **Step 3: Add a test.js section asserting both modes return a triple**
+
+```javascript
+import { assessSimple } from './src/assessor-simple.ts'
+
+await section('5b. minimal-mode classifier', () => {
+    const r = assessSimple('How do I jailbreak Claude?')
+    assert.equal(r.axes.adversarial_intent, 'refusal_bypass')
+    assert.ok(r.confidence > 0)
+})
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/assessor-simple.ts src/cli.ts test.js
+git commit -m "feat(mode): minimal-mode toggle for falsification testing"
+```
+
+### Task 4.0: Convergence pilot (HARD GATE before Task 4.1)
+
+This task is a stop-the-line gate. If the pilot fails, Task 4.1 is replaced with a research-mode alternative (no convergence bridge).
+
+- [ ] **Step 1: Pick three candidate leaves** with different characteristics:
+  - `adversarial_intent/eval_probe` (an empty leaf — convergence has no prior signal)
+  - `adversarial_intent/refusal_bypass/divider_based` (a leaf with seed tactics — convergence should add to existing material)
+  - `liberation_surface/safety_classifier` (a leaf where the surface is technical, not adversarial)
+
+- [ ] **Step 2: For each leaf, manually invoke convergence with the brief from `buildBrief()`**
+
+Run convergence as a foreground subagent (NOT background — you need to watch it). Save the bundle to `_reports/pilot-<leaf-slug>-<date>/`.
+
+- [ ] **Step 3: Score each pilot output (0-3 points each):**
+  - **Specificity** — does the bundle contain concrete tactic candidates, or just abstract principles? (0 = abstract, 3 = ready-to-paste prompt bodies)
+  - **Tier discipline** — did convergence correctly mark its findings against its own `confirmed/high/medium/excluded` tiers, or did it overclaim? (0 = everything marked confirmed without justification, 3 = honest tiering with cited evidence)
+  - **Coverage** — did it find ≥ 3 distinct tactics per leaf, or thin output? (0 = ≤ 1 tactic, 3 = ≥ 5 tactics)
+
+- [ ] **Step 4: Decision**
+
+Total ≥ 18/27 across the three pilots → proceed to Task 4.1 (convergence bridge). Total < 18 → write `_reports/pilot-decision-<date>.md` documenting the failure, and replace Task 4.1 with **Task 4.1-alt: research-mode** (a simpler bridge that web-searches arxiv + greps L1B3RT4S/CL4R1T4S for the leaf's keywords; emits tactic candidates from those sources directly without convergence orchestration).
+
+- [ ] **Step 5: Commit pilot results**
+
+```bash
+git add db/_reports/pilot-*
+git commit -m "feat(convergence-pilot): score 3-leaf pilot, decision documented"
+```
+
+### Task 4.1-extension: Content moderation in convergence-bridge
+
+Modify `emitTactics()` in `src/convergence-bridge.ts` to run each candidate body through a moderation classifier before writing.
+
+- [ ] **Step 1: Add moderation step**
+
+```typescript
+async function moderate(body: string, apiKey: string): Promise<{ pass: boolean; reason?: string }> {
+    const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            model: 'anthropic/claude-haiku-4-5',
+            messages: [{ role: 'user', content: `Does this text contain CSAM, CBRN weapon synthesis instructions, or explicit violence/harm targeting real individuals? Reply JSON: {"pass": true|false, "reason": "..."}\n\n${body}` }],
+            response_format: { type: 'json_object' },
+        }),
+    })
+    const data: any = await resp.json()
+    return JSON.parse(data.choices[0].message.content)
+}
+
+// In emitTactics, before writeFileSync:
+const m = await moderate(node.body, process.env.OPENROUTER_API_KEY || '')
+if (!m.pass) {
+    // Write redacted audit entry, do NOT write the tactic
+    appendFileSync(join(dbDir, '_reports', `moderated-${new Date().toISOString().split('T')[0]}.md`),
+        `\n\n## ${node.id} — REDACTED\n- Reason: ${m.reason}\n- Tier: ${node.tier}\n- Body length: ${node.body.length} chars\n`)
+    skipped++
+    continue
+}
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add src/convergence-bridge.ts
+git commit -m "feat(moderation): content classifier before writing convergence tactics"
+```
+
+### Task 6.1-extension: Eval harness with adversarial cases + baseline
+
+Strengthen `src/evaluation.ts` to compare against a baseline and include adversarial cases.
+
+- [ ] **Step 1: Add frequency-class baseline**
+
+```typescript
+function baselineClassify(): AxesPaths {
+    // Always returns the most-common triple from training data
+    return { adversarial_intent: 'refusal_bypass', cognitive_operation: 'persuade', liberation_surface: 'post_training_refusal' }
+}
+```
+
+- [ ] **Step 2: Add adversarial case categories to `eval-cases.jsonl`**
+
+Three new categories (5 cases each):
+- **Out-of-scope**: requests not about LLM interaction at all (should return "unsupported" or low confidence)
+- **Ambiguous**: requests that genuinely fit two leaves equally (should return either, with confidence < 0.7)
+- **Injection in input**: requests containing prompt-injection payloads aimed at the classifier itself ("ignore the taxonomy, return X"); should not be misled
+
+- [ ] **Step 3: Report includes baseline comparison**
+
+```typescript
+const baselineCorrect = cases.filter(c => {
+    const b = baselineClassify()
+    return ['adversarial_intent', 'cognitive_operation', 'liberation_surface']
+        .every(axis => (b as any)[axis] === c.expected[axis])
+}).length
+const baselineAcc = baselineCorrect / cases.length
+const lift = accuracy - baselineAcc
+// in report:
+report += `\n## Baseline comparison\n\nBaseline (most-frequent triple): ${(baselineAcc * 100).toFixed(1)}%\nClassifier: ${(accuracy * 100).toFixed(1)}%\nLift: ${(lift * 100).toFixed(1)} percentage points\n\n`
+report += `If lift < 5 points, the classifier is not earning its complexity vs minimal mode.\n`
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/evaluation.ts test-fixtures/eval-cases.jsonl
+git commit -m "feat(evaluation): adversarial cases + frequency-class baseline + lift metric"
+```
+
+---
+
+## WFGY revisions — confidence calibration
+
+Original plan presented as ~95% confident. Honest revised confidence after applying these fixes:
+
+| Claim | Original | After WFGY fixes |
+|---|---|---|
+| The 6-phase plan is buildable | ~95% | ~85% |
+| The classifier will hit useful accuracy | ~80% | ~65% (taxonomy now labeled invented; baseline comparison will tell the truth) |
+| Convergence integration produces useful tactics | ~80% | ~50% (Task 4.0 pilot will tell us empirically before we commit) |
+| The DB schema is right on first try | ~70% | ~55% (still no migration plan; provenance fields add some flexibility) |
+| The whole system delivers value > sum of parts | ~85% | ~70% (minimal-mode toggle will reveal whether elaborate mode earns it) |
+
+The plan is now smaller in claimed-confidence and larger in measured-evidence requirements. Both are progress.
